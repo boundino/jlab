@@ -4,89 +4,96 @@
 
 import numpy as np
 import math
-from scipy import signal
-from scipy.interpolate import interp1d
-from scipy.signal import butter, filtfilt, iirdesign, zpk2tf, freqz
+from gwpy.timeseries import TimeSeries
 
 import matplotlib.pyplot as plt
 import matplotlib.mlab as mlab
 import h5py
 
-# LIGO-specific readligo.py 
-import readligo as rl
+import os
+
+#----------------------------------------------------------------
+# Set parameters
+#----------------------------------------------------------------
+
+print('------- Set parameters >>>')
+fn = 'data/H-H1_GWOSC_4KHZ_R1-1126257415-4096.hdf5' # data file
+tevent = 1126259462.422 # Mon Sep 14 09:50:45 GMT 2015
+evtname = 'GW150914' # event name
+
+detector = '' # detecotr: L1 or H1
+if 'L1' in fn : detector = 'L1'
+elif 'H1' in fn : detector = 'H1'
+else : exit()
+frequency = '4KHZ'
+
+dirpath = './plots/'+evtname+'_'+frequency+'_'+detector;
+os.makedirs(dirpath, exist_ok=True)
+print(dirpath)
 
 #----------------------------------------------------------------
 # Load LIGO data
 #----------------------------------------------------------------
 
-fn = 'data/H-H1_LOSC_4_V1-1126259446-32.hdf5'
-strain, sampletimes, chan_dict = rl.loaddata(fn, 'H1')
+print('------- Load data >>>')
+strain = TimeSeries.read(fn, format='hdf5.losc')
+center = int(tevent)
+strain = strain.crop(center-16, center+16)
 
 #----------------------------------------------------------------
 # Show LIGO strain vs. time
 #----------------------------------------------------------------
 
+print('------- Draw strain >>>')
 plt.figure()
-plt.plot(sampletimes, strain)
-plt.xlabel('Time (s)')
+strain.plot()
 plt.ylabel('strain')
-plt.title('Advanced LIGO strain data near GW150914')
-plt.savefig('plots/GW150914_strain.png')
+plt.savefig(dirpath + '/strain_raw.png')
 
 #----------------------------------------------------------------
 # Obtain the power spectrum density PSD / ASD
 #----------------------------------------------------------------
 
-psdx, psdfreqs = mlab.psd(strain, Fs = 4096, NFFT = 4096)
-psd = interp1d(psdfreqs, psdx)
+print('------- Draw ASD >>>')
+asd = strain.asd(fftlength=8)
 
 plt.figure()
-plt.loglog(psdfreqs, np.sqrt(psdx),'r',label='H1 strain')
-plt.axis([10, 1500, 1e-24, 1e-19])
-plt.ylabel('ASD (strain/rtHz)')
-plt.xlabel('Freq (Hz)')
-plt.title('Advanced LIGO strain data near GW150914')
-plt.savefig('plots/GW150914_ASDs.png')
+asd.plot()
+plt.xlim(10, 2000)
+plt.ylim(1e-24, 1e-19)
+plt.ylabel('ASD (strain/Hz$^{1/2})$')
+plt.xlabel('Frequency (Hz)')
+plt.savefig(dirpath + '/ASDs.png')
 
 #----------------------------------------------------------------
 # Whitening data
 #----------------------------------------------------------------
 
-def whiten(strain, interp_psd, dt):
-    Nt = len(strain)
-    freqs = np.fft.rfftfreq(Nt, dt)
-    hf = np.fft.rfft(strain)
-    white_hf = hf / (np.sqrt(interp_psd(freqs) /dt/2.))
-    white_ht = np.fft.irfft(white_hf, n=Nt)
-    return white_ht
-
-white_data = whiten(strain, psd, sampletimes[1]-sampletimes[0])
+print('------- Whitening >>>')
+white_data = strain.whiten()
 
 plt.figure()
-plt.plot(sampletimes, white_data)
-plt.xlabel('Time (s)')
-plt.ylabel('strain')
-plt.title('Advanced LIGO strain data near GW150914 with whitening')
-plt.savefig('plots/GW150914_strain_whiten.png')
+white_data.plot()
+plt.ylabel('strain (whitened)')
+plt.savefig(dirpath + '/strain_whiten.png')
 
 #----------------------------------------------------------------
 # Bandpass filtering
 #----------------------------------------------------------------
 
-bb, ab = butter(4, [20.*2./4096, 300.*2./4096], btype='band')
-white_data_bp = filtfilt(bb, ab, white_data)
+print('------- Band-pass filter >>>')
+white_data_bp = white_data.bandpass(30, 400)
 
 plt.figure()
-plt.plot(sampletimes, white_data_bp)
-plt.xlabel('Time (s)')
-plt.ylabel('strain')
-plt.title('Advanced LIGO strain data near GW150914 filtered')
-plt.savefig('plots/GW150914_strain_whiten_filter.png')
+white_data_bp.plot()
+plt.ylabel('strain (whitened + band-pass)')
+plt.savefig(dirpath + '/strain_whiten_bandpass.png')
 
 #----------------------------------------------------------------
 # Frequency analytic
 #----------------------------------------------------------------
 
+print('------- Build analytic model for frequency >>>')
 def gwfreq(iM,iT,iT0):
     const = (134.*np.pi*2)*np.power((1.21/iM),5./8.)
     output = const*np.power(np.maximum((iT0-iT),3e-2),-3./8.) # we can max it out above 500 Hz-ish
@@ -94,39 +101,35 @@ def gwfreq(iM,iT,iT0):
 
 times = np.linspace(0., 4., 50)
 freq = gwfreq(20, times, 4)
+
 plt.figure()
 plt.plot(times, freq)
-plt.xlabel('time (s)')
+plt.xlabel('Time (s)')
 plt.ylabel('Frequency (Hz)')
-plt.title('Frequency variation in time of a black hole merger 20 $M_{\odot}$')
-plt.savefig('plots/GW150914_spectrogram_analytic.png')
+plt.savefig(dirpath + '/qtrans_analytic.png')
 
 #----------------------------------------------------------------
 # Spectrogram
 #----------------------------------------------------------------
 
-tevent = 1126259462.422         # Mon Sep 14 09:50:45 GMT 2015
-indxt = np.where((sampletimes >= tevent-10) & (sampletimes < tevent+10))
-NFFT = 4096/16
-NOVL = NFFT*15/16
-window = np.blackman(NFFT)
-spec_cmap='viridis'
+print('------- q-transformation >>>')
+dt = 1  #-- Set width of q-transform plot, in seconds
+hq = strain.q_transform(outseg=(tevent-dt, tevent+dt))
 
 plt.figure()
-spec_H1, freqs, bins, im = plt.specgram(white_data[indxt], NFFT=NFFT, Fs=4096, window=window, 
-                                        noverlap=NOVL, cmap=spec_cmap, xextent=[-10,10])
-plt.xlabel('time (s) since '+str(tevent))
+fig = hq.plot()
+ax = fig.gca()
+fig.colorbar(label="Normalised energy")
+ax.grid(False)
+ax.set_yscale('log')
 plt.ylabel('Frequency (Hz)')
-plt.colorbar()
-plt.axis([-0.5, 0.5, 0, 500])
-plt.title('aLIGO H1 strain data near GW150914')
-plt.savefig('plots/GW150914_spectrogram_whitened.png')
-
+plt.savefig(dirpath + '/qtrans.png')
 
 #----------------------------------------------------------------
 # Wave form analytic
 #----------------------------------------------------------------
 
+print('------- Build analytic model for wave >>>')
 def osc(x,M,t0,n,phi):
     freq = gwfreq(M,x,t0)
     val = n*(np.cos(freq*(t0-x)+phi))*1e-12
@@ -143,54 +146,53 @@ def osc_dif(params, x, data, eps):
 
 times = np.linspace(-0.1, 0.3, 1000)
 freq = osc(times, 30, 0.18, 1, 0.0)
-plt.figure()
+plt.figure(figsize=(12, 4))
+plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(times, freq)
-plt.xlabel('Time (s)')
+plt.xlabel('Time (s) since '+str(tevent))
 plt.ylabel('strain')
-plt.title('Approximate GW waveform')
-plt.savefig('plots/GW150914_strain_analytic.png')
+plt.savefig(dirpath + '/strain_analytic.png')
 
 #----------------------------------------------------------------
-# Zoom and Fit
+# Fit
 #----------------------------------------------------------------
 
-indxt = np.where((sampletimes >= tevent-0.17) & (sampletimes < tevent+0.13))
-x = sampletimes[indxt]
+print('------- Fit >>>')
+sample_times = white_data_bp.times.value
+sample_data = white_data_bp.value
+indxt = np.where((sample_times >= (tevent-0.17)) & (sample_times < (tevent+0.13)))
+x = sample_times[indxt]
 x = x-x[0]
-white_data_zoom = white_data[indxt]
-white_data_zoom_bp = white_data_bp[indxt]
+white_data_bp_zoom = sample_data[indxt]
 
-plt.figure()
-plt.plot(x, white_data_zoom_bp)
+plt.figure(figsize=(12, 4))
+plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
+plt.plot(x, white_data_bp_zoom)
 plt.xlabel('Time (s)')
-plt.ylabel('strain')
-plt.title('Advanced LIGO strain data near GW150914 filtered and zoomed')
-plt.savefig('plots/GW150914_strain_whiten_filter_zoom.png')
+plt.ylabel('strain (whitened + band-pass)')
+plt.savefig(dirpath + '/strain_whiten_bandpass_nofit.png')
 
 import lmfit
-from lmfit import Model,minimize, fit_report, Parameters
+from lmfit import Model, minimize, fit_report, Parameters
 
-#Make a fit model using my favorite python fit lmfit
 model = lmfit.Model(osc)
 p = model.make_params()
 p['M'].set(20)     # Mass guess
 p['t0'].set(0.18)  # By construction we put the merger in the center
 p['n'].set(1)      # normalization guess
 p['phi'].set(0)    # Phase guess
-unc = np.full(len(white_data_zoom),20)
-out = minimize(osc_dif, params=p, args=(x, white_data_zoom, unc))
+unc = np.full(len(white_data_bp_zoom),20)
+out = minimize(osc_dif, params=p, args=(x, white_data_bp_zoom, unc))
 print(fit_report(out))
-
 plt.plot(x, model.eval(params=out.params,x=x),'r',label='best fit')
-plt.savefig('plots/GW150914_strain_whiten_filter_fit.png')
+plt.savefig(dirpath + '/strain_whiten_bandpass_fit.png')
 
 #----------------------------------------------------------------
 # Significance vs. time
 #----------------------------------------------------------------
 
+print('------- Search long time range >>>')
 def fitrange(data,xx,tcenter,trange):
-    print(xx)
-    print(tcenter, trange)
     findxt = np.where((xx >= tcenter-trange*0.5) & (xx < tcenter+trange*0.5))
     fwhite_data = data[findxt]
     x = xx[findxt]
@@ -210,22 +212,21 @@ times += tevent
 sigs=[]
 chi2=[]
 for time in times:
-        pSig,pChi2 = fitrange(white_data_bp, sampletimes, time, 0.4)
+        pSig,pChi2 = fitrange(white_data_bp.value, sample_times, time, 0.4)
         sigs.append(pSig)
         chi2.append(pChi2)
 
-plt.figure()
+plt.figure(figsize=(12, 4))
+plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(times, sigs)
 plt.xlabel('Time (s)')
 plt.ylabel('N/$\sigma_{N}$')
-plt.title('Significance of a potential wave')
-plt.savefig('plots/GW150914_strain_significance.png')
+plt.savefig(dirpath + '/strain_search_significance.png')
 
-plt.figure()
+plt.figure(figsize=(12, 4))
+plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(times, chi2)
 plt.xlabel('Time (s)')
 plt.ylabel('$\chi^{2}$')
-plt.title('$\chi^{2}$ of a potential wave')
-plt.savefig('plots/GW150914_strain_chi2.png')
-
+plt.savefig(dirpath + '/strain_search_chi2.png')
 
