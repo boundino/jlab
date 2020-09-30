@@ -12,13 +12,20 @@ import h5py
 
 import os
 
+def savefig(plt, name):
+    plt.savefig(name)
+    print('Figure ' + os.path.abspath(name) + ' is created.')
+
+def printstep(step):
+    print('\033[32;1m\n------- '+ step + ' >>>\033[0m')
+
 #----------------------------------------------------------------
 # Set parameters
 #----------------------------------------------------------------
 
-print('------- Set parameters >>>')
+printstep('Set parameters')
 fn = 'data/H-H1_GWOSC_4KHZ_R1-1126257415-4096.hdf5' # data file
-tevent = 1126259462.422 # Mon Sep 14 09:50:45 GMT 2015
+tevent = 1126259462.422
 evtname = 'GW150914' # event name
 
 detector = '' # detecotr: L1 or H1
@@ -35,8 +42,8 @@ print(dirpath)
 # Load LIGO data
 #----------------------------------------------------------------
 
-print('------- Load data >>>')
-strain = TimeSeries.read(fn, format='hdf5.losc')
+printstep('Load data')
+strain = TimeSeries.read(fn, format='hdf5.losc') # gwpy.timeseries.TimeSeries https://gwpy.github.io/docs/latest/api/gwpy.timeseries.TimeSeries.html
 center = int(tevent)
 strain = strain.crop(center-16, center+16)
 
@@ -44,17 +51,17 @@ strain = strain.crop(center-16, center+16)
 # Show LIGO strain vs. time
 #----------------------------------------------------------------
 
-print('------- Draw strain >>>')
+printstep('Draw strain')
 plt.figure()
 strain.plot()
 plt.ylabel('strain')
-plt.savefig(dirpath + '/strain_raw.png')
+savefig(plt, dirpath + '/strain_raw.png')
 
 #----------------------------------------------------------------
 # Obtain the power spectrum density PSD / ASD
 #----------------------------------------------------------------
 
-print('------- Draw ASD >>>')
+printstep('Draw ASD')
 asd = strain.asd(fftlength=8)
 
 plt.figure()
@@ -63,56 +70,39 @@ plt.xlim(10, 2000)
 plt.ylim(1e-24, 1e-19)
 plt.ylabel('ASD (strain/Hz$^{1/2})$')
 plt.xlabel('Frequency (Hz)')
-plt.savefig(dirpath + '/ASDs.png')
+savefig(plt, dirpath + '/ASDs.png')
 
 #----------------------------------------------------------------
 # Whitening data
 #----------------------------------------------------------------
 
-print('------- Whitening >>>')
+printstep('Whitening')
 white_data = strain.whiten()
 
 plt.figure()
 white_data.plot()
 plt.ylabel('strain (whitened)')
-plt.savefig(dirpath + '/strain_whiten.png')
+savefig(plt, dirpath + '/strain_whiten.png')
 
 #----------------------------------------------------------------
 # Bandpass filtering
 #----------------------------------------------------------------
 
-print('------- Band-pass filter >>>')
-white_data_bp = white_data.bandpass(30, 400)
+printstep('Band-pass filter')
+bandpass_low = 30
+bandpass_high = 400
+white_data_bp = white_data.bandpass(bandpass_low, bandpass_high)
 
 plt.figure()
 white_data_bp.plot()
 plt.ylabel('strain (whitened + band-pass)')
-plt.savefig(dirpath + '/strain_whiten_bandpass.png')
+savefig(plt, dirpath + '/strain_whiten_bandpass.png')
 
 #----------------------------------------------------------------
-# Frequency analytic
+# q-transform
 #----------------------------------------------------------------
 
-print('------- Build analytic model for frequency >>>')
-def gwfreq(iM,iT,iT0):
-    const = (134.*np.pi*2)*np.power((1.21/iM),5./8.)
-    output = const*np.power(np.maximum((iT0-iT),3e-2),-3./8.) # we can max it out above 500 Hz-ish
-    return output
-
-times = np.linspace(0., 4., 50)
-freq = gwfreq(20, times, 4)
-
-plt.figure()
-plt.plot(times, freq)
-plt.xlabel('Time (s)')
-plt.ylabel('Frequency (Hz)')
-plt.savefig(dirpath + '/qtrans_analytic.png')
-
-#----------------------------------------------------------------
-# Spectrogram
-#----------------------------------------------------------------
-
-print('------- q-transformation >>>')
+printstep('q-transform')
 dt = 1  #-- Set width of q-transform plot, in seconds
 hq = strain.q_transform(outseg=(tevent-dt, tevent+dt))
 
@@ -123,23 +113,42 @@ fig.colorbar(label="Normalised energy")
 ax.grid(False)
 ax.set_yscale('log')
 plt.ylabel('Frequency (Hz)')
-plt.savefig(dirpath + '/qtrans.png')
+savefig(plt, dirpath + '/qtrans.png')
+
+#----------------------------------------------------------------
+# Frequency analytic
+#----------------------------------------------------------------
+
+printstep('Build analytic model for frequency')
+def gwfreq(iM,iT,iT0):
+    const = (948.5)*np.power((1./iM),5./8.)
+    output = const*np.power(np.maximum((iT0-iT),3e-2),-3./8.) # we can max it out above 500 Hz-ish
+    return output
+
+times = np.linspace(0., 4., 50)
+freq = gwfreq(20, times, 4)
+
+plt.figure()
+plt.plot(times, freq)
+plt.xlabel('Time (s)')
+plt.ylabel('Frequency (Hz)')
+savefig(plt, dirpath + '/qtrans_analytic.png')
 
 #----------------------------------------------------------------
 # Wave form analytic
 #----------------------------------------------------------------
 
-print('------- Build analytic model for wave >>>')
-def osc(x,M,t0,n,phi):
-    freq = gwfreq(M,x,t0)
-    val = n*(np.cos(freq*(t0-x)+phi))*1e-12
-    val = val*np.power(M*freq,10./3.)*(1*(x<=t0)+np.exp((freq/(2*np.pi))*(t0-x))*(x>t0))
+printstep('Build analytic model for wave')
+def osc(t,Mc,t0,C,phi):
+    freq = gwfreq(Mc,t,t0)
+    val = C*(np.cos(freq*(t0-t)+phi))*1e-12
+    val = val*np.power(Mc*freq,10./3.)*(1*(t<=t0)+np.exp((freq/(2*np.pi))*(t0-t))*(t>t0))
     return val
 
 def osc_dif(params, x, data, eps):
-    iM=params["M"]
+    iM=params["Mc"]
     iT0=params["t0"]
-    norm=params["n"]
+    norm=params["C"]
     phi=params["phi"]
     val=osc(x, iM, iT0, norm, phi)
     return (val-data)/eps
@@ -151,13 +160,13 @@ plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(times, freq)
 plt.xlabel('Time (s) since '+str(tevent))
 plt.ylabel('strain')
-plt.savefig(dirpath + '/strain_analytic.png')
+savefig(plt, dirpath + '/strain_analytic.png')
 
 #----------------------------------------------------------------
 # Fit
 #----------------------------------------------------------------
 
-print('------- Fit >>>')
+printstep('Fit')
 sample_times = white_data_bp.times.value
 sample_data = white_data_bp.value
 indxt = np.where((sample_times >= (tevent-0.17)) & (sample_times < (tevent+0.13)))
@@ -170,28 +179,28 @@ plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(x, white_data_bp_zoom)
 plt.xlabel('Time (s)')
 plt.ylabel('strain (whitened + band-pass)')
-plt.savefig(dirpath + '/strain_whiten_bandpass_nofit.png')
+savefig(plt, dirpath + '/strain_whiten_bandpass_nofit.png')
 
 import lmfit
 from lmfit import Model, minimize, fit_report, Parameters
 
 model = lmfit.Model(osc)
 p = model.make_params()
-p['M'].set(20)     # Mass guess
+p['Mc'].set(20)     # Mass guess
 p['t0'].set(0.18)  # By construction we put the merger in the center
-p['n'].set(1)      # normalization guess
+p['C'].set(1)      # normalization guess
 p['phi'].set(0)    # Phase guess
 unc = np.full(len(white_data_bp_zoom),20)
 out = minimize(osc_dif, params=p, args=(x, white_data_bp_zoom, unc))
 print(fit_report(out))
-plt.plot(x, model.eval(params=out.params,x=x),'r',label='best fit')
-plt.savefig(dirpath + '/strain_whiten_bandpass_fit.png')
+plt.plot(x, model.eval(params=out.params,t=x),'r',label='best fit')
+savefig(plt, dirpath + '/strain_whiten_bandpass_fit.png')
 
 #----------------------------------------------------------------
 # Significance vs. time
 #----------------------------------------------------------------
 
-print('------- Search long time range >>>')
+printstep('Search long time range')
 def fitrange(data,xx,tcenter,trange):
     findxt = np.where((xx >= tcenter-trange*0.5) & (xx < tcenter+trange*0.5))
     fwhite_data = data[findxt]
@@ -199,13 +208,13 @@ def fitrange(data,xx,tcenter,trange):
     x = x-x[0]
     model = lmfit.Model(osc)
     p = model.make_params()
-    p['M'].set(30)
+    p['Mc'].set(30)
     p['t0'].set(trange*0.5)
-    p['n'].set(1)
+    p['C'].set(1)
     p['phi'].set(0)
     unc=np.full(len(fwhite_data),20)
     out = minimize(osc_dif, params=p, args=(x, fwhite_data, unc))
-    return abs(out.params["n"].value/out.params["n"].stderr),out.redchi
+    return abs(out.params["C"].value/out.params["C"].stderr),out.redchi
 
 times = np.arange(-14, 14, 0.05)
 times += tevent
@@ -221,12 +230,12 @@ plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(times, sigs)
 plt.xlabel('Time (s)')
 plt.ylabel('N/$\sigma_{N}$')
-plt.savefig(dirpath + '/strain_search_significance.png')
+savefig(plt, dirpath + '/strain_search_significance.png')
 
 plt.figure(figsize=(12, 4))
 plt.subplots_adjust(left=0.1, right=0.9, top=0.85, bottom=0.2)
 plt.plot(times, chi2)
 plt.xlabel('Time (s)')
 plt.ylabel('$\chi^{2}$')
-plt.savefig(dirpath + '/strain_search_chi2.png')
+savefig(plt, dirpath + '/strain_search_chi2.png')
 
